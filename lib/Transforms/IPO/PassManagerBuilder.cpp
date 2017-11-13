@@ -160,6 +160,7 @@ PassManagerBuilder::PassManagerBuilder() {
     PGOInstrUse = RunPGOInstrUse;
     PrepareForThinLTO = false;
     PerformThinLTO = false;
+    EnableLoopIdiom = true;
 }
 
 PassManagerBuilder::~PassManagerBuilder() {
@@ -291,7 +292,8 @@ void PassManagerBuilder::addFunctionSimplificationPasses(
   MPM.add(createCFGSimplificationPass());
   addInstructionCombiningPass(MPM);
   MPM.add(createIndVarSimplifyPass());        // Canonicalize indvars
-  MPM.add(createLoopIdiomPass());             // Recognize idioms like memset.
+  if (EnableLoopIdiom)
+    MPM.add(createLoopIdiomPass());       // Recognize idioms like memset.
   MPM.add(createLoopDeletionPass());          // Delete dead loops
   if (EnableLoopInterchange) {
     MPM.add(createLoopInterchangePass()); // Interchange loops
