@@ -41,6 +41,8 @@ using namespace llvm;
 /// Displayed with -stats
 STATISTIC(SYCLKernelProcessed, "Number of SYCL kernel functions processed");
 
+cl::opt<bool> ReqdWorkGroupSizeFPGA("reqd-workgroup-size-fpga", cl::desc("set reqd_work_group_size to be 1-1-1"));
+
 // Put the code in an anonymous namespace to avoid polluting the global
 // namespace
 namespace {
@@ -128,6 +130,8 @@ struct inSPIRation : public ModulePass {
     SmallVector<llvm::Metadata *, 8> TypeQuals;
     // MDNode for the kernel argument access qualifiers
     SmallVector<llvm::Metadata *, 8> AccessQuals;
+    // MDNode for the kernel required work group size
+    SmallVector<llvm::Metadata *, 8> ReqdWorkGroupSize;
 
     for (auto &A : F.args()) {
       std::string TypeName;
@@ -172,6 +176,13 @@ struct inSPIRation : public ModulePass {
             llvm::ConstantAsMetadata::get(
                 llvm::ConstantInt::get(Int32Ty, 0)));
     }
+
+    for (int i = 0; i < 3; ++i) {
+      ReqdWorkGroupSize.push_back(
+          llvm::ConstantAsMetadata::get(
+              llvm::ConstantInt::get(Int32Ty, 1)));
+    }
+
     // Add the SPIR metadata describing the address space of each argument
     F.setMetadata("kernel_arg_addr_space",
                   llvm::MDNode::get(Ctx, AddressSpaceQuals));
@@ -189,6 +200,12 @@ struct inSPIRation : public ModulePass {
     // Add the SPIR metadata describing the access qualifier of each argument
     F.setMetadata("kernel_arg_access_qual",
                   llvm::MDNode::get(Ctx, AccessQuals));
+
+    if (ReqdWorkGroupSizeFPGA) {
+      // Add the SPIR metadata for required work group size
+      F.setMetadata("reqd_work_group_size",
+                    llvm::MDNode::get(Ctx, ReqdWorkGroupSize));
+    }
   }
 
 
