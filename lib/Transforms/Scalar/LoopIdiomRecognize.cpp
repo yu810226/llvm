@@ -58,6 +58,7 @@
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
+#include "llvm/SYCL.h"
 using namespace llvm;
 
 #define DEBUG_TYPE "loop-idiom"
@@ -145,6 +146,25 @@ public:
     if (skipLoop(L))
       return false;
 
+    Function *F = L->getHeader()->getParent();
+    if (sycl::isKernel(*F)) {
+      DEBUG(dbgs() << L->getName() << " in "<< F->getName()
+                   << " is kernel. Do not do LoopIdiomRecognizeLegacyPass.\n");
+      return false;
+    }
+
+    // If function is used by kernel, skip this pass.
+    for (Use &U : F->uses()) {
+      CallSite CS(U.getUser());
+      if (CS.getInstruction() != nullptr) {
+        if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
+          DEBUG(dbgs() << L->getName() << " in function that is used by kernel. "
+                       << "Do not do LoopIdiomRecognizeLegacyPass.\n");
+          return false;
+        }
+      }
+    }
+
     AliasAnalysis *AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
     DominatorTree *DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
     LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
@@ -219,6 +239,26 @@ static void deleteDeadInstruction(Instruction *I) {
 
 bool LoopIdiomRecognize::runOnLoop(Loop *L) {
   CurLoop = L;
+
+  Function *F = L->getHeader()->getParent();
+  if (sycl::isKernel(*F)) {
+    DEBUG(dbgs() << L->getName() << " in "<< F->getName()
+                 << " is kernel. Do not do LoopIdiomRecognizeLegacyPass.\n");
+    return false;
+  }
+
+  // If function is used by kernel, skip this pass.
+  for (Use &U : F->uses()) {
+    CallSite CS(U.getUser());
+    if (CS.getInstruction() != nullptr) {
+      if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
+        DEBUG(dbgs() << L->getName() << " in function that is used by kernel. "
+                     << "Do not do LoopIdiomRecognizeLegacyPass.\n");
+        return false;
+      }
+    }
+  }
+
   // If the loop could not be converted to canonical form, it must have an
   // indirectbr in it, just give up.
   if (!L->getLoopPreheader())
