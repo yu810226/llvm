@@ -231,6 +231,9 @@ ModulePass *createWholeProgramDevirtPass();
 ModulePass *createSampleProfileLoaderPass();
 ModulePass *createSampleProfileLoaderPass(StringRef Name);
 
+//===----------------------------------------------------------------------===//
+/// createSYCLFunctionInKernelAlwaysInlinePass - This pass is for adding 
+/// always inline attribute for function called by SYCL kernel. 
 Pass *createSYCLFunctionInKernelAlwaysInlinePass(); 
 
 } // End llvm namespace
