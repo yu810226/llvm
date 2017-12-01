@@ -231,6 +231,8 @@ ModulePass *createWholeProgramDevirtPass();
 ModulePass *createSampleProfileLoaderPass();
 ModulePass *createSampleProfileLoaderPass(StringRef Name);
 
+Pass *createSYCLFunctionInKernelAlwaysInlinePass(); 
+
 } // End llvm namespace
 
 #endif

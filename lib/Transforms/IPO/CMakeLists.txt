@@ -28,6 +28,9 @@ add_llvm_library(LLVMipo
   StripDeadPrototypes.cpp
   StripSymbols.cpp
   WholeProgramDevirt.cpp
+  ItaniumDemangle.cpp
+  SYCLKernel.cpp
+  SYCLFunctionInKernelAlwaysInline.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms

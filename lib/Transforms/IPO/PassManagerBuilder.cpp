@@ -38,6 +38,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Vectorize.h"
+#include "llvm/SYCL.h"
 
 using namespace llvm;
 
@@ -161,6 +162,7 @@ PassManagerBuilder::PassManagerBuilder() {
     PrepareForThinLTO = false;
     PerformThinLTO = false;
     EnableLoopIdiom = true;
+    EnableForceFunctionInKernelInline = false;
 }
 
 PassManagerBuilder::~PassManagerBuilder() {
@@ -428,6 +430,8 @@ void PassManagerBuilder::populateModulePassManager(
   // Start of CallGraph SCC passes.
   if (!DisableUnitAtATime)
     MPM.add(createPruneEHPass()); // Remove dead EH info
+  if (EnableForceFunctionInKernelInline)
+    MPM.add(createSYCLFunctionInKernelAlwaysInlinePass()); // Force functions called in kernel to be inline
   if (Inliner) {
     MPM.add(Inliner);
     Inliner = nullptr;

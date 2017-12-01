@@ -138,6 +138,7 @@ public:
   bool PrepareForThinLTO;
   bool PerformThinLTO;
   bool EnableLoopIdiom;
+  bool EnableForceFunctionInKernelInline;
 
   /// Profile data file name that the instrumentation will be written to.
   std::string PGOInstrGen;
