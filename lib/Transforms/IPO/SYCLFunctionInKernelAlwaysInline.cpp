@@ -7,9 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Detect and mark SYCL kernels with external linkage.  Everything else is
-// marked with internal linkage, so the GlobalDCE pass can be used later to
-// keep only the kernel code and the transitive closure of the dependencies
+// Detect functions that did not specify with noinline attribute called in SYCL 
+// kernel. And force these functions inline.
+// This pass needs to be done before inline pass and is aim to solve argument 
+// flattening problem in SYCL.
 // ===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/Statistic.h"
@@ -34,13 +35,8 @@ using namespace llvm;
 // namespace
 namespace {
 
-/// Detect and mark SYCL kernels with external linkage
-///
-/// Everything else is marked with internal linkage, so the GlobalDCE pass
-/// can be used later to keep only the kernel code and the transitive closure
-/// of the dependencies.
-///
-/// Based on an idea from Mehdi Amini
+/// Detect functions that did not specify with noinline attribute called in SYCL
+/// kernel. And force these functions inline.
 struct SYCLFunctionInKernelAlwaysInline : public ModulePass {
 
   static char ID; // Pass identification, replacement for typeid
@@ -72,16 +68,20 @@ struct SYCLFunctionInKernelAlwaysInline : public ModulePass {
     for (auto &F : M.functions()) {
       DEBUG(errs() << "Function: ";
             errs().write_escaped(F.getName()) << '\n');
+      // Detect functions that did not specify with noinline attribute called in SYCL
+      // kernel
       for (Use &U : F.uses()) {
         CallSite CS(U.getUser());
         if (CS.getInstruction() != nullptr) {
           if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
             DEBUG(dbgs() << F.getName() << " is a function called in kernel.\n");
             if (F.hasLocalLinkage() && !F.hasFnAttribute(Attribute::NoInline)) {
-              F.addFnAttr(Attribute::AlwaysInline);
-	      errs() << F.getName()<< " add AlwaysInline attribute.\n";
-	    }
-	  }
+              // Add always inline attribute. This can force the function to be 
+        // inline in inline pass
+        F.addFnAttr(Attribute::AlwaysInline);
+        DEBUG(dbgs() << F.getName()<< " add AlwaysInline attribute.\n");
+      }
+    }
         }
       }
     }
@@ -102,4 +102,3 @@ INITIALIZE_PASS_END(SYCLFunctionInKernelAlwaysInline, "SYCL-function-in-kernel-a
                                           "SYCL function in kernel always inline pass", false, false)
 
 Pass *llvm::createSYCLFunctionInKernelAlwaysInlinePass() { return new SYCLFunctionInKernelAlwaysInline(); }
-
