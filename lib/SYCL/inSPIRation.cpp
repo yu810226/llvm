@@ -26,6 +26,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/Pass.h"
 #include "llvm/SYCL.h"
 #include "llvm/Support/Debug.h"
@@ -209,6 +210,14 @@ struct inSPIRation : public ModulePass {
   }
 
 
+  /// Replace the function called in kernel to spir calling convention
+  void kernelCallFuncSPIRify(Function &F) {
+    // This is a SPIR function
+    DEBUG(dbgs() << F.getName() << "is a SPIR function.\n");
+    F.setCallingConv(CallingConv::SPIR_FUNC);
+  }
+  
+  
   /// Add metadata for the SPIR 2.0 version
   void setSPIRVersion(Module &M) {
     /* Get inSPIRation from SPIRTargetCodeGenInfo::emitTargetMD in
@@ -255,8 +264,20 @@ struct inSPIRation : public ModulePass {
     for (auto &F : M.functions()) {
       // Only consider definition of SYCL kernels
       // \todo Put SPIR calling convention on declarations too
-      if (!F.isDeclaration() && sycl::isKernel(F))
-        kernelSPIRify(F);
+      if (!F.isDeclaration()) {
+        if (sycl::isKernel(F)) { 
+          kernelSPIRify(F);
+	} else {
+          // For function is called in SYCL kernels
+          // Put SPIR calling convention
+          for (Use &U : F.uses()) {
+            CallSite CS(U.getUser());
+            if (CS.getInstruction() != nullptr)
+              if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent())))
+                kernelCallFuncSPIRify(F);
+          }
+        }
+      }
     }
 
     setSPIRVersion(M);
