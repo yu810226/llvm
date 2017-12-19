@@ -217,7 +217,14 @@ struct inSPIRation : public ModulePass {
     F.setCallingConv(CallingConv::SPIR_FUNC);
   }
   
-  
+  /// Rename basic block name to force not contain $ sign in the name
+  void renameBlockname(Function &F) {
+    int count = 0;
+    for (auto &B : F) {
+      B.setName("label_" + Twine(count++));
+    }
+  }
+
   /// Add metadata for the SPIR 2.0 version
   void setSPIRVersion(Module &M) {
     /* Get inSPIRation from SPIRTargetCodeGenInfo::emitTargetMD in
@@ -265,16 +272,20 @@ struct inSPIRation : public ModulePass {
       // Only consider definition of SYCL kernels
       // \todo Put SPIR calling convention on declarations too
       if (!F.isDeclaration()) {
-        if (sycl::isKernel(F)) { 
+        if (sycl::isKernel(F)) {
           kernelSPIRify(F);
+	  renameBlockname(F);
 	} else {
           // For function is called in SYCL kernels
           // Put SPIR calling convention
           for (Use &U : F.uses()) {
             CallSite CS(U.getUser());
-            if (CS.getInstruction() != nullptr)
-              if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent())))
+            if (CS.getInstruction() != nullptr) {
+              if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
                 kernelCallFuncSPIRify(F);
+	        renameBlockname(F);
+	      }
+	    }
           }
         }
       }
