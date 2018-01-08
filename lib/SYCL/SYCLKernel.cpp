@@ -20,6 +20,7 @@
 // Wait for LLVM 4.0...
 // #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/SYCL.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -71,6 +72,14 @@ bool isKernel(const Function &F) {
   return KernelFound;
 }
 
+/// Test if uses call site in SYCL kernel
+bool isCallSiteInKernel (const Use &U) {
+  CallSite CS{U.getUser()};
+  if (auto I = CS.getInstruction())
+    if (sycl::isKernel(*(I->getParent()->getParent())))
+      return true;
+  return false;
+}
 
 /// Mapping from the full kernel mangle named to a unique integer ID
 std::map<std::string, std::size_t> SimplerKernelNames;

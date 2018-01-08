@@ -217,7 +217,7 @@ struct inSPIRation : public ModulePass {
     F.setCallingConv(CallingConv::SPIR_FUNC);
   }
 
-  /// Rename basic block name to force not contain $ sign in the name
+  /// Rename basic block name to avoid $ sign in the name
   void renameBlockname(Function &F) {
     int count = 0;
     for (auto &B : F) {

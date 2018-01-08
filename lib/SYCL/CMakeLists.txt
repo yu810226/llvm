@@ -20,7 +20,7 @@ add_llvm_loadable_module( SYCL
   SYCLSerializeArgumentsInside.cpp
   inSPIRation.cpp
   remove_global_empty_cdtors.cpp
-  SYCLModifySPIRFuncName.cpp
+  SYCLCleanUpFuncName.cpp
 
   DEPENDS
   intrinsics_gen

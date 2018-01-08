@@ -24,6 +24,9 @@ namespace sycl {
 /// Test if a function is a SYCL kernel
 bool isKernel(const Function &F);
 
+/// Test if uses call site in SYCL kernel
+bool isCallSiteInKernel (const Use &U);
+
 /// Register a kernel with its full name and returns its ID
 ///
 /// If the kernel is already registered, do not register it again.

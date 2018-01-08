@@ -1,4 +1,4 @@
-//===- SYCLModifySPIRFuncName.cpp                               ---------------===//
+//===- SYCLCleanUpFuncName.cpp                               ---------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,7 +7,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Detect functions called in SYCL kernels and modify their names.  
+// This pass is aim to detect functions called in SYCL kernels and modify their
+// names. Since function names with $ sign would choke Xilinx xocc, we modify
+// all function names to not containing $ sign.
 // ===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/Statistic.h"
@@ -23,8 +25,8 @@
 using namespace llvm;
 
 /// Switch on debug with set DebugFlag=0 or set DebugFlag=1 in debugger or with
-/// option -debug or -debug-only=SYCL-modify-SPIR-funcName
-#define DEBUG_TYPE "SYCL-modify-SPIR-func-name"
+/// option -debug or -debug-only=SYCL-cleanup-func-name
+#define DEBUG_TYPE "SYCL-cleanup-func-name"
 
 
 /// Displayed with -stats
@@ -35,12 +37,12 @@ STATISTIC(SYCLFuncCalledInKernelFound, "Number of SYCL kernel functions");
 namespace {
 
 /// Detect functions called in SYCL kernels and modify their names.
-struct SYCLModifySPIRFuncName : public ModulePass {
+struct SYCLCleanUpFuncName : public ModulePass {
 
   static char ID; // Pass identification, replacement for typeid
 
 
-  SYCLModifySPIRFuncName() : ModulePass(ID) {}
+  SYCLCleanUpFuncName() : ModulePass(ID) {}
 
 
   bool doInitialization(Module &M) override {
@@ -61,26 +63,20 @@ struct SYCLModifySPIRFuncName : public ModulePass {
 
   /// Visit all the module content
   bool runOnModule(Module &M) override {
-    // count is for naming new name for each function called in kernel 
+    // count is for naming new name for each function called in kernel
     int count = 0;
 
     for (auto &F : M.functions()) {
       // Only consider definition of functions
       if (!F.isDeclaration()) {
-        // If functions are called by kernel, modify their names
-        for (Use &U : F.uses()) {
-          CallSite CS(U.getUser());
-          if (CS.getInstruction() != nullptr) {
-            if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
-              DEBUG(dbgs() << F.getName() << "is called in kernel function. Force to change name.\n");
-              SYCLFuncCalledInKernelFound++;
-              F.setName("foo." + Twine(count++));  
-            }
+        for (Use &U : F.uses())
+          if (sycl::isCallSiteInKernel(U)) {
+            DEBUG(dbgs() << F.getName() << "is called in kernel function. Force to change name.\n");
+            SYCLFuncCalledInKernelFound++;
+            F.setName("sycl_func_" + Twine{count++});
           }
-        }
       }
     }
-
 
     // The module probably changed
     return true;
@@ -89,6 +85,5 @@ struct SYCLModifySPIRFuncName : public ModulePass {
 
 }
 
-char SYCLModifySPIRFuncName::ID = 0;
-static RegisterPass<SYCLModifySPIRFuncName> X { "SYCL-modify-SPIR-func-name",
-                                          "SYCL modify SPIR function name pass" };
+char SYCLCleanUpFuncName::ID = 0;
+static RegisterPass<SYCLCleanUpFuncName> X { "SYCL-cleanup-func-name", "SYCL clean up function name pass" };
