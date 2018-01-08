@@ -1,4 +1,4 @@
-//===-- SYCLArgsFlattening.cpp - Promote by-reference arguments -----------===//
+
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -63,6 +63,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <set>
+#include <vector>
+#include <algorithm>
 
 
 using namespace llvm;
@@ -112,7 +114,7 @@ PromoteArguments(CallGraphNode *CGN, CallGraph &CG,
 static bool isDenselyPacked(Type *type, const DataLayout &DL);
 static bool canPaddingBeAccessed(Argument *Arg);
 static bool isSafeToPromoteArgument(Argument *Arg, bool isByVal, AAResults &AAR,
-                                    unsigned MaxElements);
+                                    unsigned MaxElements, CallGraph &CG);
 static CallGraphNode *
 DoPromotion(Function *F, SmallPtrSetImpl<Argument *> &ArgsToPromote,
             SmallPtrSetImpl<Argument *> &ByValArgsToTransform, CallGraph &CG);
@@ -332,15 +334,39 @@ PromoteArguments(CallGraphNode *CGN, CallGraph &CG,
     // not apply to inalloca.
     bool isSafeToPromote = (PtrArg->hasByValAttr() &&
        (isDenselyPacked(AgTy, DL) || !canPaddingBeAccessed(PtrArg)));
-    
-    for (Use &U : F->uses()) {
-      CallSite CS(U.getUser());
-      if (CS.getInstruction() != nullptr) {
-        // If the function is called in kernel, force to do argument promotion
-        if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
+
+    for (auto &U : F->uses()) {
+      CallSite CS{U.getUser()};
+      if (auto I = CS.getInstruction()) {
+        auto parent = I->getParent()->getParent();
+        if (sycl::isKernel(*parent)) {
           isSafeToPromote = true;
-          DEBUG(dbgs() << "SYCL: " << F->getName() << "is called in kernel function.\n");
-	}
+          DEBUG(dbgs() << "SYCL: " << parent->getName() << "is called in kernel.\n");
+          break;
+        }
+
+        // If the function has ancestor kernel, force to do argument promotion
+        std::vector<CallGraphNode *> Deps;
+        std::vector<CallGraphNode *> Done;
+        Deps.push_back(CG[parent]);
+
+        while (!Deps.empty()) {
+          CallGraphNode *node = Deps.back();
+          Deps.pop_back();
+          Done.push_back(node);
+          for (auto itr = node->begin(); itr != node->end(); itr++) {
+            if (auto ef = CallSite(itr->first).getCalledFunction()) {
+              if (sycl::isKernel(*ef)) {
+                DEBUG(dbgs() << "SYCL: " << ef->getName() << "has ancestor kernel.\n");
+                isSafeToPromote = true;
+                break;
+              }
+
+              if (std::find(Deps.begin(), Deps.end(),CG[ef]) != Deps.end())
+                Deps.push_back(CG[ef]);
+            }
+          }
+        }
       }
     }
 
@@ -348,8 +374,8 @@ PromoteArguments(CallGraphNode *CGN, CallGraph &CG,
       if (StructType *STy = dyn_cast<StructType>(AgTy)) {
         if (MaxElements > 0 && STy->getNumElements() > MaxElements) {
           DEBUG(dbgs() << "SYCL-args-flattening disable promoting argument '"
-                << PtrArg->getName() << "' because it would require adding more"
-                << " than " << MaxElements << " arguments to the function.\n");
+                       << PtrArg->getName() << "' because it would require adding more"
+                       << " than " << MaxElements << " arguments to the function.\n");
           continue;
         }
 
@@ -390,14 +416,13 @@ PromoteArguments(CallGraphNode *CGN, CallGraph &CG,
 
     // Otherwise, see if we can promote the pointer to its value.
     if (isSafeToPromoteArgument(PtrArg, PtrArg->hasByValOrInAllocaAttr(), AAR,
-                                MaxElements))
+                                MaxElements, CG))
       ArgsToPromote.insert(PtrArg);
   }
 
   // No promotable pointer arguments.
-  if (ArgsToPromote.empty() && ByValArgsToTransform.empty()) {
+  if (ArgsToPromote.empty() && ByValArgsToTransform.empty())
     return nullptr;
-  }
 
   return DoPromotion(F, ArgsToPromote, ByValArgsToTransform, CG);
 }
@@ -441,15 +466,15 @@ static bool PrefixIn(const IndicesVector &Indices,
     Low = Set.upper_bound(Indices);
     if (Low != Set.begin())
       Low--;
+    for (auto i : Indices)
+      for (auto j : *Low)
+        DEBUG(dbgs() << "PrefixIn Indices: " << i << "\n" << "PrefixIn Low: " << j << "\n");
+
     // Low is now the last element smaller than or equal to Indices. This means
     // it points to a prefix of Indices (possibly Indices itself), if such
     // prefix exists.
     //
     // This load is safe if any prefix of its operands is safe to load.
-    for (auto itr = Indices.begin(); itr != Indices.end(); itr++)
-      DEBUG(dbgs() << "PrefixIn Indices: " << *itr << "\n");
-    for (auto itr = Low->begin(); itr != Low->end(); itr++)
-      DEBUG(dbgs() << "PrefixIn Low: " << *itr << "\n");
     return Low != Set.end() && IsPrefix(*Low, Indices);
 }
 
@@ -495,7 +520,8 @@ static void MarkIndicesSafe(const IndicesVector &ToMark,
 /// elements of the aggregate in order to avoid exploding the number of
 /// arguments passed in.
 static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
-                                    AAResults &AAR, unsigned MaxElements) {
+                                    AAResults &AAR, unsigned MaxElements,
+                                    CallGraph &CG) {
   typedef std::set<IndicesVector> GEPIndicesSet;
   Function *F = Arg->getParent();
   // Quick exit for unused arguments
@@ -533,10 +559,36 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
   // isRelatedToKernel is for marking functions called in kernel.
   bool isRelatedToKernel = false;
   for (Use &U : F->uses()) {
-    CallSite CS(U.getUser());
-    if (CS.getInstruction() != nullptr) {
-      if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
-	isRelatedToKernel = true;
+    CallSite CS{U.getUser()};
+    if (auto I = CS.getInstruction()) {
+      auto parent = I->getParent()->getParent();
+      if (sycl::isKernel(*parent)) {
+        DEBUG(dbgs() << "SYCL: " << parent->getName() << "is called in kernel.\n");
+        isRelatedToKernel = true;
+        break;
+      }
+
+      // If the function has ancestor kernel, force to do argument promotion
+      std::vector<CallGraphNode *> Deps;
+      std::vector<CallGraphNode *> Done;
+      Deps.push_back(CG[parent]);
+
+      while (!Deps.empty()) {
+        auto node = Deps.back();
+        Deps.pop_back();
+        Done.push_back(node);
+        for (auto itr = node->begin(); itr != node->end(); itr++) {
+          if (auto ef = CallSite(itr->first).getCalledFunction()) {
+            if (sycl::isKernel(*ef)) {
+              DEBUG(dbgs() << "SYCL: " << ef->getName() << "has ancestor kernel.\n");
+              isRelatedToKernel = true;
+              break;
+            }
+
+            if (std::find(Deps.begin(), Deps.end(),CG[ef]) != Deps.end())
+              Deps.push_back(CG[ef]);
+          }
+        }
       }
     }
   }
@@ -567,7 +619,7 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
             } else {
               // We found a non-constant GEP index for this argument? Bail out
               // right away, can't promote this argument at all.
-	      DEBUG(dbgs()  << "SYCL: " << Arg->getName() << " in " << F->getName() << " used in non-constant GEP index.\n");
+              DEBUG(dbgs()  << "SYCL: " << Arg->getName() << " in " << F->getName() << " used in non-constant GEP index.\n");
               return false;
             }
 
@@ -602,20 +654,20 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
         // TODO: This runs the above loop over and over again for dead GEPs
         // Couldn't we just do increment the UI iterator earlier and erase the
         // use?
-	DEBUG(dbgs() << "SYCL: Dead GEP" << *GEP << "\n");
+        DEBUG(dbgs() << "SYCL: Dead GEP" << *GEP << "\n");
         return isSafeToPromoteArgument(Arg, isByValOrInAlloca, AAR,
-                                       MaxElements);
+                                       MaxElements, CG);
       }
 
       // Ensure that all of the indices are constants.
       for (User::op_iterator i = GEP->idx_begin(), e = GEP->idx_end();
         i != e; ++i) {
-	DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in GEP: " << *GEP << "\n");
+        DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in GEP: " << *GEP << "\n");
         if (ConstantInt *C = dyn_cast<ConstantInt>(*i)) {
-	  DEBUG(dbgs() << C->getSExtValue() << " constant extend value.\n");
+          DEBUG(dbgs() << C->getSExtValue() << " constant extend value.\n");
           Operands.push_back(C->getSExtValue());
         } else {
-	  DEBUG(dbgs() << "Not a constant operand GEP.\n");
+          DEBUG(dbgs() << "Not a constant operand GEP.\n");
           return false;  // Not a constant operand GEP!
         }
       }
@@ -624,18 +676,17 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
       for (User *GEPU : GEP->users())
         if (LoadInst *LI = dyn_cast<LoadInst>(GEPU)) {
           // Don't hack volatile/atomic loads
-          if (!LI->isSimple()) return false; 
+          if (!LI->isSimple()) return false;
           Loads.push_back(LI);
         } else {
           // Other uses than load?
-	  DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in GEP: " << *GEP << " in " <<  F->getName() << "\n");
-	  DEBUG(dbgs() << "Has other uses than load.\n");
-          DEBUG(dbgs() << "Uses: " << *GEPU << "\n");
+          DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in GEP: " << *GEP
+                       << " in " <<  F->getName() << "\n" << "User: " << *GEPU << "\n");
           return false;
         }
     } else {
-      DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in " << F->getName() << " is not load or GEP.\n");
-      DEBUG(dbgs() << "Uses: " << *UR << "\n");
+      DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in " << F->getName()
+            << " is not load or GEP.\n" << "User: " << *UR << "\n");
       return false;  // Not a load or a GEP.
     }
 
@@ -652,8 +703,8 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
     if (ToPromote.find(Operands) == ToPromote.end()) {
       if (MaxElements > 0 && ToPromote.size() == MaxElements) {
         DEBUG(dbgs() << "SYCL-args-flattening not promoting argument '"
-              << Arg->getName() << "' because it would require adding more "
-              << "than " << MaxElements << " arguments to the function.\n");
+                     << Arg->getName() << "' because it would require adding more "
+                     << "than " << MaxElements << " arguments to the function.\n");
         // We limit aggregate promotion to only promoting up to a fixed number
         // of elements of the aggregate.
         return false;
@@ -681,8 +732,7 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
     MemoryLocation Loc = MemoryLocation::get(Load);
     if (AAR.canInstructionRangeModRef(BB->front(), *Load, Loc, MRI_Mod) && !isRelatedToKernel) {
       DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in "
-            << F->getName() << "\n");
-      DEBUG(dbgs() << "Load: " << *Load << " is invalidated.\n");
+                   << F->getName() << " but " << *Load << " is invalidated.\n");
       return false;  // Pointer is invalidated!
     }
 
@@ -690,13 +740,12 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
     // To do this, we perform a depth first search on the inverse CFG from the
     // loading block.
     for (BasicBlock *P : predecessors(BB)) {
-      for (BasicBlock *TranspBB : inverse_depth_first_ext(P, TranspBlocks)) {
+      for (BasicBlock *TranspBB : inverse_depth_first_ext(P, TranspBlocks))
         if (AAR.canBasicBlockModify(*TranspBB, Loc) && !isRelatedToKernel) {
           DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in "
-                << F->getName()
-                << " every path from the entry block to the load is not transparency.\n");
-    return false;
-        }
+                       << F->getName()
+                       << " every path from the entry block to the load is not transparency.\n");
+          return false;
       }
     }
   }
@@ -840,7 +889,7 @@ DoPromotion(Function *F, SmallPtrSetImpl<Argument *> &ArgsToPromote,
   F->setSubprogram(nullptr);
 
   DEBUG(dbgs() << "ARG PROMOTION:  Promoting to:" << *NF << "\n"
-        << "From: " << *F);
+               << "From: " << *F);
 
   // Recompute the parameter attributes list based on the new arguments for
   // the function.
@@ -1058,7 +1107,7 @@ DoPromotion(Function *F, SmallPtrSetImpl<Argument *> &ArgsToPromote,
         LI->replaceAllUsesWith(&*I2);
         LI->eraseFromParent();
         DEBUG(dbgs() << "*** Promoted load of argument '" << I->getName()
-              << "' in function '" << F->getName() << "'\n");
+                     << "' in function '" << F->getName() << "'\n");
       } else {
         GetElementPtrInst *GEP = cast<GetElementPtrInst>(I->user_back());
         IndicesVector Operands;
@@ -1085,7 +1134,7 @@ DoPromotion(Function *F, SmallPtrSetImpl<Argument *> &ArgsToPromote,
         TheArg->setName(NewName);
 
         DEBUG(dbgs() << "*** Promoted agg argument '" << TheArg->getName()
-              << "' of function '" << NF->getName() << "'\n");
+                     << "' of function '" << NF->getName() << "'\n");
 
         // All of the uses must be load instructions.  Replace them all with
         // the argument specified by ArgNo.
