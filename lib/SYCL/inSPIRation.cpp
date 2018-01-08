@@ -216,12 +216,12 @@ struct inSPIRation : public ModulePass {
     DEBUG(dbgs() << F.getName() << "is a SPIR function.\n");
     F.setCallingConv(CallingConv::SPIR_FUNC);
   }
-  
+
   /// Rename basic block name to force not contain $ sign in the name
   void renameBlockname(Function &F) {
     int count = 0;
     for (auto &B : F) {
-      B.setName("label_" + Twine(count++));
+      B.setName("label_" + Twine{count++});
     }
   }
 
@@ -274,19 +274,13 @@ struct inSPIRation : public ModulePass {
       if (!F.isDeclaration()) {
         if (sycl::isKernel(F)) {
           kernelSPIRify(F);
-	  renameBlockname(F);
-	} else {
-          // For function is called in SYCL kernels
-          // Put SPIR calling convention
-          for (Use &U : F.uses()) {
-            CallSite CS(U.getUser());
-            if (CS.getInstruction() != nullptr) {
-              if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
-                kernelCallFuncSPIRify(F);
-	        renameBlockname(F);
-	      }
-	    }
-          }
+          renameBlockname(F);
+        } else if (!F.isIntrinsic()) {
+          // After kernel code selection, there are only two kinds of functions
+          // left: funcions called by kernels or LLVM intrinsic functions.
+          // For functions called in SYCL kernels. Put SPIR calling convention.
+          kernelCallFuncSPIRify(F);
+          renameBlockname(F);
         }
       }
     }
