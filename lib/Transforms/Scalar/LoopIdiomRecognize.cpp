@@ -59,6 +59,7 @@
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/SYCL.h"
+
 using namespace llvm;
 
 #define DEBUG_TYPE "loop-idiom"
@@ -154,10 +155,10 @@ public:
     }
 
     // If function is used by kernel, skip this pass.
-    for (Use &U : F->uses()) {
-      CallSite CS(U.getUser());
-      if (CS.getInstruction() != nullptr) {
-        if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
+    for (auto &U : F->uses()) {
+      CallSite CS{U.getUser()};
+      if (auto I = CS.getInstruction()) {
+        if (sycl::isKernel(*(I->getParent()->getParent()))) {
           DEBUG(dbgs() << L->getName() << " in function that is used by kernel. "
                        << "Do not do LoopIdiomRecognizeLegacyPass.\n");
           return false;
@@ -248,10 +249,10 @@ bool LoopIdiomRecognize::runOnLoop(Loop *L) {
   }
 
   // If function is used by kernel, skip this pass.
-  for (Use &U : F->uses()) {
-    CallSite CS(U.getUser());
-    if (CS.getInstruction() != nullptr) {
-      if (sycl::isKernel(*(CS.getInstruction()->getParent()->getParent()))) {
+  for (auto &U : F->uses()) {
+    CallSite CS{U.getUser()};
+    if (auto I = CS.getInstruction()) {
+      if (sycl::isKernel(*(I->getParent()->getParent()))) {
         DEBUG(dbgs() << L->getName() << " in function that is used by kernel. "
                      << "Do not do LoopIdiomRecognizeLegacyPass.\n");
         return false;
