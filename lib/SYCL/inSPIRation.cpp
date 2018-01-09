@@ -41,6 +41,7 @@ using namespace llvm;
 
 /// Displayed with -stats
 STATISTIC(SYCLKernelProcessed, "Number of SYCL kernel functions processed");
+STATISTIC(SYCLFuncCalledInKernelFound, "Number of functions directly or indirectly called by SYCL kernel functions");
 
 cl::opt<bool> ReqdWorkGroupSizeOne("reqd-workgroup-size-1", cl::desc("set reqd_work_group_size to be 1-1-1"));
 
@@ -217,8 +218,13 @@ struct inSPIRation : public ModulePass {
     F.setCallingConv(CallingConv::SPIR_FUNC);
   }
 
-  /// Rename basic block name to avoid $ sign in the name
-  void renameBlockname(Function &F) {
+  /// Rename function and basic block name to avoid $ sign in the name
+  void rename(Function &F, int num) {
+    SYCLFuncCalledInKernelFound++;
+    // Rename function name
+    F.setName("sycl_func_" + Twine{num++});
+
+    // Rename basic block name
     int count = 0;
     for (auto &B : F) {
       B.setName("label_" + Twine{count++});
@@ -268,6 +274,9 @@ struct inSPIRation : public ModulePass {
 
   /// Visit all the functions of the module
   bool runOnModule(Module &M) override {
+    // count is for naming new name for each function called in kernel
+    int count = 0;
+
     for (auto &F : M.functions()) {
       // Only consider definition of SYCL kernels
       // \todo Put SPIR calling convention on declarations too
@@ -280,7 +289,14 @@ struct inSPIRation : public ModulePass {
           // left: funcions called by kernels or LLVM intrinsic functions.
           // For functions called in SYCL kernels. Put SPIR calling convention.
           kernelCallFuncSPIRify(F);
-          renameBlockname(F);
+          // Modify the name of funcion called by SYCL kernel since function
+          // names with $ sign would choke Xilinx xocc.
+          // And in Xilinx xocc, there are passes spliting function to new
+          // functions. These new function name will come from some of the basic
+          // block name in the original function.
+          // So function and basic block names need to modify avoid containing $
+          // sign
+          rename(F, count++);
         }
       }
     }
