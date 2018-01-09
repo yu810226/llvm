@@ -24,8 +24,8 @@ namespace sycl {
 /// Test if a function is a SYCL kernel
 bool isKernel(const Function &F);
 
-/// Test if uses call site in SYCL kernel
-bool isCallSiteInKernel (const Use &U);
+/// Test if a function is directly called by SYCL kernel
+bool isCalledDirectlyByKernel (const Function &F);
 
 /// Register a kernel with its full name and returns its ID
 ///

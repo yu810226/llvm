@@ -1,4 +1,4 @@
-
+//===-- SYCLArgsFlattening.cpp - Promote by-reference arguments -----------===//
 //
 //                     The LLVM Compiler Infrastructure
 //

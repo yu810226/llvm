@@ -213,22 +213,10 @@ struct inSPIRation : public ModulePass {
 
   /// Replace the function called in kernel to spir calling convention
   void kernelCallFuncSPIRify(Function &F) {
+    SYCLFuncCalledInKernelFound++;
     // This is a SPIR function
     DEBUG(dbgs() << F.getName() << "is a SPIR function.\n");
     F.setCallingConv(CallingConv::SPIR_FUNC);
-  }
-
-  /// Rename function and basic block name to avoid $ sign in the name
-  void rename(Function &F, int num) {
-    SYCLFuncCalledInKernelFound++;
-    // Rename function name
-    F.setName("sycl_func_" + Twine{num++});
-
-    // Rename basic block name
-    int count = 0;
-    for (auto &B : F) {
-      B.setName("label_" + Twine{count++});
-    }
   }
 
   /// Add metadata for the SPIR 2.0 version
@@ -274,8 +262,8 @@ struct inSPIRation : public ModulePass {
 
   /// Visit all the functions of the module
   bool runOnModule(Module &M) override {
-    // count is for naming new name for each function called in kernel
-    int count = 0;
+    // funcCount is for naming new name for each function called in kernel
+    int funcCount = 0;
 
     for (auto &F : M.functions()) {
       // Only consider definition of SYCL kernels
@@ -283,20 +271,32 @@ struct inSPIRation : public ModulePass {
       if (!F.isDeclaration()) {
         if (sycl::isKernel(F)) {
           kernelSPIRify(F);
-          renameBlockname(F);
+          
+	  // Rename basic block name
+          int count = 0;
+          for (auto &B : F)
+            B.setName("label_" + Twine{count++});
         } else if (!F.isIntrinsic()) {
           // After kernel code selection, there are only two kinds of functions
           // left: funcions called by kernels or LLVM intrinsic functions.
           // For functions called in SYCL kernels. Put SPIR calling convention.
           kernelCallFuncSPIRify(F);
-          // Modify the name of funcion called by SYCL kernel since function
+          
+	  // Modify the name of funcion called by SYCL kernel since function
           // names with $ sign would choke Xilinx xocc.
           // And in Xilinx xocc, there are passes spliting function to new
           // functions. These new function name will come from some of the basic
           // block name in the original function.
           // So function and basic block names need to modify avoid containing $
           // sign
-          rename(F, count++);
+          
+	  // Rename function name
+          F.setName("sycl_func_" + Twine{funcCount++});
+
+          // Rename basic block name
+          int count = 0;
+          for (auto &B : F)
+            B.setName("label_" + Twine{count++});
         }
       }
     }

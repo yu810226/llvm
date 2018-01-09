@@ -155,16 +155,7 @@ public:
     }
 
     // If function is used by kernel, skip this pass.
-    for (auto &U : F->uses()) {
-      CallSite CS{U.getUser()};
-      if (auto I = CS.getInstruction()) {
-        if (sycl::isKernel(*(I->getParent()->getParent()))) {
-          DEBUG(dbgs() << L->getName() << " in function that is used by kernel. "
-                       << "Do not do LoopIdiomRecognizeLegacyPass.\n");
-          return false;
-        }
-      }
-    }
+    sycl::isCalledDirectlyByKernel(*F);
 
     AliasAnalysis *AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
     DominatorTree *DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
@@ -249,16 +240,7 @@ bool LoopIdiomRecognize::runOnLoop(Loop *L) {
   }
 
   // If function is used by kernel, skip this pass.
-  for (auto &U : F->uses()) {
-    CallSite CS{U.getUser()};
-    if (auto I = CS.getInstruction()) {
-      if (sycl::isKernel(*(I->getParent()->getParent()))) {
-        DEBUG(dbgs() << L->getName() << " in function that is used by kernel. "
-                     << "Do not do LoopIdiomRecognizeLegacyPass.\n");
-        return false;
-      }
-    }
-  }
+  sycl::isCalledDirectlyByKernel(*F);
 
   // If the loop could not be converted to canonical form, it must have an
   // indirectbr in it, just give up.

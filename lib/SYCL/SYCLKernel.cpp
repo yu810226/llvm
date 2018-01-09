@@ -72,12 +72,14 @@ bool isKernel(const Function &F) {
   return KernelFound;
 }
 
-/// Test if uses call site in SYCL kernel
-bool isCallSiteInKernel (const Use &U) {
-  CallSite CS{U.getUser()};
-  if (auto I = CS.getInstruction())
-    if (sycl::isKernel(*(I->getParent()->getParent())))
-      return true;
+/// Test if a function is directly called by SYCL kernel
+bool isCalledDirectlyByKernel (const Function &F) {
+  for (auto &U : F.uses()) {
+    CallSite CS{U.getUser()};
+    if (auto I = CS.getInstruction())
+      if (sycl::isKernel(*(I->getParent()->getParent())))
+        return true;
+  }
   return false;
 }
 
