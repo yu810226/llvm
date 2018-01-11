@@ -54,8 +54,6 @@ add_llvm_library(LLVMScalarOpts
   StraightLineStrengthReduce.cpp
   StructurizeCFG.cpp
   TailRecursionElimination.cpp
-  ../../SYCL/ItaniumDemangle.cpp
-  ../../SYCL/SYCLKernel.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms
