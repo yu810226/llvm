@@ -15,7 +15,10 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/CallGraphSCCPass.h"
 #include "llvm/IR/Function.h"
 
 namespace llvm {
@@ -24,8 +27,21 @@ namespace sycl {
 /// Test if a function is a SYCL kernel
 bool isKernel(const Function &F);
 
-/// Test if a function is directly called by SYCL kernel
-bool isCalledDirectlyByKernel (const Function &F);
+/// Test if a function is in the list of having kernel ancestor
+bool isInHasKernelAncestorFunctionList(Function &F,
+                       std::vector<Function *> &hasKernelAncestorFunctionList);
+
+/// Test if a function has ancestor kernel
+bool hasAncestorKernel(Function &F,
+                       std::vector<Function *> &hasKernelAncestorFunctionList);
+
+/// Compute CallGraph to record all functions that have ancestor kernel
+void computeAncestorNode(CallGraphSCC &SCC, CallGraph &CG,
+                         std::vector<Function *> &hasKernelAncestorFunctionList);
+
+/// Update functions that have ancestor kernel list when new CallGraphNode created in CallGraph
+void updateHasKernelAncestorFunctionList (CallGraphNode &NewNode,
+                                          std::vector<Function *> &hasKernelAncestorFunctionList);
 
 /// Register a kernel with its full name and returns its ID
 ///

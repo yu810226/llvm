@@ -7,16 +7,23 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Detect SYCL kernels and rename kernel too shorten unique names
+// Detect SYCL kernels and rename kernel to shorten unique names
+//
+// Detect if functions have kernel as an ancestor
 // ===------------------------------------------------------------------- -===//
 
+#include <algorithm>
 #include <cstdlib>
 #include <map>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
+#include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/CallGraphSCCPass.h"
 // Wait for LLVM 4.0...
 // #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/Function.h"
@@ -72,15 +79,59 @@ bool isKernel(const Function &F) {
   return KernelFound;
 }
 
-/// Test if a function is directly called by SYCL kernel
-bool isCalledDirectlyByKernel (const Function &F) {
+/// Test if a function is in the list of having kernel ancestor
+bool isInHasKernelAncestorFunctionList(Function &F,
+                       std::vector<Function *> &hasKernelAncestorFunctionList) {
+  if (std::find(hasKernelAncestorFunctionList.begin(), hasKernelAncestorFunctionList.end(), &F)
+      != hasKernelAncestorFunctionList.end())
+    return true;
+  else
+    return false;
+}
+
+/// Test if a function has ancestor kernel
+bool hasAncestorKernel(Function &F,
+                       std::vector<Function *> &hasKernelAncestorFunctionList) {
   for (auto &U : F.uses()) {
     CallSite CS{U.getUser()};
-    if (auto I = CS.getInstruction())
-      if (sycl::isKernel(*(I->getParent()->getParent())))
+    if (auto I = CS.getInstruction()) {
+      auto parent = I->getParent()->getParent();
+      if (isInHasKernelAncestorFunctionList(*parent, hasKernelAncestorFunctionList))
         return true;
+      else
+        return false;
+    }
   }
+
   return false;
+}
+
+/// Compute CallGraph to record all functions that have ancestor kernel
+void computeAncestorNode(CallGraphSCC &SCC, CallGraph &CG,
+                         std::vector<Function *> &hasKernelAncestorFunctionList) {
+  // Find the CGN the kernel function belongs to
+  // DFS algorithm start from the kernel function CGN to record all the function
+  // has ancestor of it
+  // for (CallGraphNode *I : SCC) {} will run in bottom-up order
+  for (scc_iterator<CallGraph*> SCCI = scc_begin(&CG); !SCCI.isAtEnd();
+       ++SCCI) {
+    const std::vector<CallGraphNode*> &nextSCC = *SCCI;
+    for (std::vector<CallGraphNode*>::const_iterator I = nextSCC.begin(),
+           E = nextSCC.end(); I != E; ++I) {
+      Function *F = (*I)->getFunction();
+      if(F)
+        if (isKernel(*F) || hasAncestorKernel(*F, hasKernelAncestorFunctionList))
+          hasKernelAncestorFunctionList.push_back(F);
+    }
+  }
+}
+
+/// Update functions that have ancestor kernel list when new CallGraphNode created in CallGraph
+void updateHasKernelAncestorFunctionList (CallGraphNode &NewNode,
+                                          std::vector<Function *> &hasKernelAncestorFunctionList) {
+  Function *F = NewNode.getFunction();
+  if (hasAncestorKernel(*F, hasKernelAncestorFunctionList))
+    hasKernelAncestorFunctionList.push_back(F);
 }
 
 /// Mapping from the full kernel mangle named to a unique integer ID
