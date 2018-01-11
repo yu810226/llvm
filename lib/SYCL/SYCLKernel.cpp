@@ -113,12 +113,11 @@ void computeAncestorNode(CallGraphSCC &SCC, CallGraph &CG,
   // DFS algorithm start from the kernel function CGN to record all the function
   // has ancestor of it
   // for (CallGraphNode *I : SCC) {} will run in bottom-up order
-  for (scc_iterator<CallGraph*> SCCI = scc_begin(&CG); !SCCI.isAtEnd();
+  for (auto SCCI = scc_begin(&CG); !SCCI.isAtEnd();
        ++SCCI) {
     const std::vector<CallGraphNode*> &nextSCC = *SCCI;
-    for (std::vector<CallGraphNode*>::const_iterator I = nextSCC.begin(),
-           E = nextSCC.end(); I != E; ++I) {
-      Function *F = (*I)->getFunction();
+    for (auto I = nextSCC.begin(), E = nextSCC.end(); I != E; ++I) {
+      auto *F = (*I)->getFunction();
       if(F)
         if (isKernel(*F) || hasAncestorKernel(*F, hasKernelAncestorFunctionList))
           hasKernelAncestorFunctionList.push_back(F);
@@ -129,7 +128,7 @@ void computeAncestorNode(CallGraphSCC &SCC, CallGraph &CG,
 /// Update functions that have ancestor kernel list when new CallGraphNode created in CallGraph
 void updateHasKernelAncestorFunctionList (CallGraphNode &NewNode,
                                           std::vector<Function *> &hasKernelAncestorFunctionList) {
-  Function *F = NewNode.getFunction();
+  auto *F = NewNode.getFunction();
   if (hasAncestorKernel(*F, hasKernelAncestorFunctionList))
     hasKernelAncestorFunctionList.push_back(F);
 }

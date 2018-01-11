@@ -64,7 +64,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include <set>
 #include <vector>
-#include <algorithm>
 
 
 using namespace llvm;
@@ -118,6 +117,7 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByVal, AAResults &AAR,
 static CallGraphNode *
 DoPromotion(Function *F, SmallPtrSetImpl<Argument *> &ArgsToPromote,
             SmallPtrSetImpl<Argument *> &ByValArgsToTransform, CallGraph &CG);
+std::vector<Function*> hasKernelAncestorFunctionList;
 
 char SYCLArgsFlattening::ID = 0;
 INITIALIZE_PASS_BEGIN(SYCLArgsFlattening, "SYCL-args-flattening",
@@ -154,6 +154,8 @@ static bool runImpl(CallGraphSCC &SCC, CallGraph &CG,
               PromoteArguments(OldNode, CG, AARGetter, MaxElements)) {
         LocalChange = true;
         SCC.ReplaceNode(OldNode, NewNode);
+        // Update new node function for hasKernelAncestorFunctionList
+        sycl::updateHasKernelAncestorFunctionList(*NewNode, hasKernelAncestorFunctionList);
       }
     }
     Changed |= LocalChange;               // Remember that we changed something.
@@ -169,6 +171,9 @@ bool SYCLArgsFlattening::runOnSCC(CallGraphSCC &SCC) {
   // Get the callgraph information that we need to update to reflect our
   // changes.
   CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
+
+  // Compute function has ancestor kernel
+  sycl::computeAncestorNode(SCC, CG, hasKernelAncestorFunctionList);
 
   // We compute dedicated AA results for each function in the SCC as needed. We
   // use a lambda referencing external objects so that they live long enough to
@@ -335,39 +340,10 @@ PromoteArguments(CallGraphNode *CGN, CallGraph &CG,
     bool isSafeToPromote = (PtrArg->hasByValAttr() &&
        (isDenselyPacked(AgTy, DL) || !canPaddingBeAccessed(PtrArg)));
 
-    for (auto &U : F->uses()) {
-      CallSite CS{U.getUser()};
-      if (auto I = CS.getInstruction()) {
-        auto parent = I->getParent()->getParent();
-        if (sycl::isKernel(*parent)) {
-          isSafeToPromote = true;
-          DEBUG(dbgs() << "SYCL: " << parent->getName() << "is called in kernel.\n");
-          break;
-        }
-
-        // If the function has ancestor kernel, force to do argument promotion
-        std::vector<CallGraphNode *> Deps;
-        std::vector<CallGraphNode *> Done;
-        Deps.push_back(CG[parent]);
-
-        while (!Deps.empty()) {
-          CallGraphNode *node = Deps.back();
-          Deps.pop_back();
-          Done.push_back(node);
-          for (auto itr = node->begin(); itr != node->end(); itr++) {
-            if (auto ef = CallSite(itr->first).getCalledFunction()) {
-              if (sycl::isKernel(*ef)) {
-                DEBUG(dbgs() << "SYCL: " << ef->getName() << "has ancestor kernel.\n");
-                isSafeToPromote = true;
-                break;
-              }
-
-              if (std::find(Deps.begin(), Deps.end(),CG[ef]) != Deps.end())
-                Deps.push_back(CG[ef]);
-            }
-          }
-        }
-      }
+    // If the function has ancestor kernel, force to do argument promotion
+    if (sycl::hasAncestorKernel(*F, hasKernelAncestorFunctionList)) {
+      DEBUG(dbgs() << "SYCL: " << F->getName() << "has ancestor kernel.\n");
+      isSafeToPromote = true;
     }
 
     if (isSafeToPromote) {
@@ -466,9 +442,6 @@ static bool PrefixIn(const IndicesVector &Indices,
     Low = Set.upper_bound(Indices);
     if (Low != Set.begin())
       Low--;
-    for (auto i : Indices)
-      for (auto j : *Low)
-        DEBUG(dbgs() << "PrefixIn Indices: " << i << "\n" << "PrefixIn Low: " << j << "\n");
 
     // Low is now the last element smaller than or equal to Indices. This means
     // it points to a prefix of Indices (possibly Indices itself), if such
@@ -558,39 +531,11 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
 
   // isRelatedToKernel is for marking functions called in kernel.
   bool isRelatedToKernel = false;
-  for (Use &U : F->uses()) {
-    CallSite CS{U.getUser()};
-    if (auto I = CS.getInstruction()) {
-      auto parent = I->getParent()->getParent();
-      if (sycl::isKernel(*parent)) {
-        DEBUG(dbgs() << "SYCL: " << parent->getName() << "is called in kernel.\n");
-        isRelatedToKernel = true;
-        break;
-      }
 
-      // If the function has ancestor kernel, force to do argument promotion
-      std::vector<CallGraphNode *> Deps;
-      std::vector<CallGraphNode *> Done;
-      Deps.push_back(CG[parent]);
-
-      while (!Deps.empty()) {
-        auto node = Deps.back();
-        Deps.pop_back();
-        Done.push_back(node);
-        for (auto itr = node->begin(); itr != node->end(); itr++) {
-          if (auto ef = CallSite(itr->first).getCalledFunction()) {
-            if (sycl::isKernel(*ef)) {
-              DEBUG(dbgs() << "SYCL: " << ef->getName() << "has ancestor kernel.\n");
-              isRelatedToKernel = true;
-              break;
-            }
-
-            if (std::find(Deps.begin(), Deps.end(),CG[ef]) != Deps.end())
-              Deps.push_back(CG[ef]);
-          }
-        }
-      }
-    }
+  // If the function has ancestor kernel, force to do argument promotion
+  if (sycl::hasAncestorKernel(*F, hasKernelAncestorFunctionList)) {
+    DEBUG(dbgs() << "SYCL: " << F->getName() << "has ancestor kernel.\n");
+    isRelatedToKernel = true;
   }
 
   // If the function is called in kernel, force to make any load with first index 0 is valid.
@@ -720,6 +665,10 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
   // check to see if the pointer is guaranteed to not be modified from entry of
   // the function to each of the load instructions.
 
+  // However, if the fuction has kernel as an ancestor, it is guaranteed to not
+  // be modified from entry of the load instructions. isRelatedToKernel is
+  // added here to determine if we are in this situation.
+
   // Because there could be several/many load instructions, remember which
   // blocks we know to be transparent to the load.
   SmallPtrSet<BasicBlock*, 16> TranspBlocks;
@@ -728,7 +677,7 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
     // Check to see if the load is invalidated from the start of the block to
     // the load itself.
     BasicBlock *BB = Load->getParent();
-
+    
     MemoryLocation Loc = MemoryLocation::get(Load);
     if (AAR.canInstructionRangeModRef(BB->front(), *Load, Loc, MRI_Mod) && !isRelatedToKernel) {
       DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in "
