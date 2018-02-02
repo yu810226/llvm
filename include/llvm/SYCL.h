@@ -15,8 +15,8 @@
 
 #include <cstddef>
 #include <string>
-#include <vector>
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/CallGraphSCCPass.h"
 #include "llvm/IR/Function.h"
@@ -27,21 +27,18 @@ namespace sycl {
 /// Test if a function is a SYCL kernel
 bool isKernel(const Function &F);
 
-/// Test if a function is in the list of having kernel ancestor
-bool isInHasKernelAncestorFunctionList(Function &F,
-                       std::vector<Function *> &hasKernelAncestorFunctionList);
+/// Test if functions having the kernel as an ancestor
+bool isTransitivelyCalledFromKernel(Function &F,
+                                    SmallPtrSet<Function *, 32> &FunctionsCalledByKernel);
 
-/// Test if a function has ancestor kernel
-bool hasAncestorKernel(Function &F,
-                       std::vector<Function *> &hasKernelAncestorFunctionList);
+/// Add the functions that are transitively called from the kernel in the set
+void recordFunctionsCalledByKernel(CallGraphSCC &SCC, CallGraph &CG,
+                                   SmallPtrSet<Function *, 32> &FunctionsCalledByKernel);
 
-/// Compute CallGraph to record all functions that have ancestor kernel
-void computeAncestorNode(CallGraphSCC &SCC, CallGraph &CG,
-                         std::vector<Function *> &hasKernelAncestorFunctionList);
-
-/// Update functions that have ancestor kernel list when new CallGraphNode created in CallGraph
-void updateHasKernelAncestorFunctionList (CallGraphNode &NewNode,
-                                          std::vector<Function *> &hasKernelAncestorFunctionList);
+/// Update the FunctionsCalledByKernel set when new CallGraphNode created in
+/// CallGraph
+void updateFunctionsCalledByKernel (CallGraphNode &NewNode,
+                                    SmallPtrSet<Function *, 32> &FunctionsCalledByKernel);
 
 /// Register a kernel with its full name and returns its ID
 ///

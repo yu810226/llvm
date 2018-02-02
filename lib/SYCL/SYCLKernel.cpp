@@ -18,9 +18,9 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <vector>
 
 #include "llvm/ADT/SCCIterator.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/CallGraphSCCPass.h"
@@ -79,24 +79,14 @@ bool isKernel(const Function &F) {
   return KernelFound;
 }
 
-/// Test if a function is in the list of having kernel ancestor
-bool isInHasKernelAncestorFunctionList(Function &F,
-                       std::vector<Function *> &hasKernelAncestorFunctionList) {
-  if (std::find(hasKernelAncestorFunctionList.begin(), hasKernelAncestorFunctionList.end(), &F)
-      != hasKernelAncestorFunctionList.end())
-    return true;
-  else
-    return false;
-}
-
-/// Test if a function has ancestor kernel
-bool hasAncestorKernel(Function &F,
-                       std::vector<Function *> &hasKernelAncestorFunctionList) {
+/// Test if functions having the kernel as an ancestor
+bool isTransitivelyCalledFromKernel(Function &F,
+                                    SmallPtrSet<Function *, 32> &FunctionsCalledByKernel) {
   for (auto &U : F.uses()) {
     CallSite CS{U.getUser()};
     if (auto I = CS.getInstruction()) {
       auto parent = I->getParent()->getParent();
-      if (isInHasKernelAncestorFunctionList(*parent, hasKernelAncestorFunctionList))
+      if (FunctionsCalledByKernel.count(parent))
         return true;
       else
         return false;
@@ -106,31 +96,30 @@ bool hasAncestorKernel(Function &F,
   return false;
 }
 
-/// Compute CallGraph to record all functions that have ancestor kernel
-void computeAncestorNode(CallGraphSCC &SCC, CallGraph &CG,
-                         std::vector<Function *> &hasKernelAncestorFunctionList) {
-  // Find the CGN the kernel function belongs to
-  // DFS algorithm start from the kernel function CGN to record all the function
-  // has ancestor of it
-  // for (CallGraphNode *I : SCC) {} will run in bottom-up order
-  for (auto SCCI = scc_begin(&CG); !SCCI.isAtEnd();
-       ++SCCI) {
-    const std::vector<CallGraphNode*> &nextSCC = *SCCI;
-    for (auto I = nextSCC.begin(), E = nextSCC.end(); I != E; ++I) {
-      auto *F = (*I)->getFunction();
-      if(F)
-        if (isKernel(*F) || hasAncestorKernel(*F, hasKernelAncestorFunctionList))
-          hasKernelAncestorFunctionList.push_back(F);
-    }
+/// Add the functions that are transitively called from the kernel in the set
+void recordFunctionsCalledByKernel(CallGraphSCC &SCC, CallGraph &CG,
+                                   SmallPtrSet<Function *, 32> &FunctionsCalledByKernel) {
+  // Find the CallGraphNode that the kernel function belongs to.
+  // Then, DFS algorithm starts from the kernel function CallGraphNode to
+  // discover all the functions that have kernel as an ancestor and add them to
+  // the FunctionsCalledByKernel set.
+  // \note for (CallGraphNode *I : SCC) {} will run in bottom-up order
+  for (auto SCCI = scc_begin(&CG); !SCCI.isAtEnd(); ++SCCI) {
+    auto const &nextSCC = *SCCI;
+    for (auto I : nextSCC)
+      if(auto *F = (*I)->getFunction())
+        if (isKernel(*F) || isTransitivelyCalledFromKernel(*F, FunctionsCalledByKernel))
+          FunctionsCalledByKernel.push_back(F);
   }
 }
 
-/// Update functions that have ancestor kernel list when new CallGraphNode created in CallGraph
-void updateHasKernelAncestorFunctionList (CallGraphNode &NewNode,
-                                          std::vector<Function *> &hasKernelAncestorFunctionList) {
+/// Update the FunctionsCalledByKernel set when new CallGraphNode created in
+/// CallGraph
+void updateFunctionsCalledByKernel (CallGraphNode &NewNode,
+                                    SmallPtrSet<Function *, 32> &FunctionsCalledByKernel) {
   auto *F = NewNode.getFunction();
-  if (hasAncestorKernel(*F, hasKernelAncestorFunctionList))
-    hasKernelAncestorFunctionList.push_back(F);
+  if (isTransitivelyCalledFromKernel(*F, FunctionsCalledByKernel))
+    FunctionsCalledByKernel.push_back(F);
 }
 
 /// Mapping from the full kernel mangle named to a unique integer ID
