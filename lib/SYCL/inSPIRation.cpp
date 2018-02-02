@@ -49,7 +49,7 @@ cl::opt<bool> ReqdWorkGroupSizeOne("reqd-workgroup-size-1", cl::desc("set reqd_w
 // namespace
 namespace {
 
-/// Transorm the SYCL kernel functions into SPIR-compatible kernels
+/// Transform the SYCL kernel functions into SPIR-compatible kernels
 struct inSPIRation : public ModulePass {
 
   static char ID; // Pass identification, replacement for typeid
@@ -108,7 +108,7 @@ struct inSPIRation : public ModulePass {
   }
 
 
-  /// Transorm a function into a SPIR-compatible kernel
+  /// Transform a function into a SPIR-compatible kernel
   void kernelSPIRify(Function &F) {
     ++SYCLKernelProcessed;
 
@@ -211,7 +211,7 @@ struct inSPIRation : public ModulePass {
   }
 
 
-  /// Replace the function called in kernel to spir calling convention
+  /// Replace the function called in kernel to SPIR calling convention
   void kernelCallFuncSPIRify(Function &F) {
     SYCLFuncCalledInKernelFound++;
     // This is a SPIR function
@@ -268,29 +268,29 @@ struct inSPIRation : public ModulePass {
     for (auto &F : M.functions()) {
       // Only consider definition of SYCL kernels
       // \todo Put SPIR calling convention on declarations too
-      if (!F.isDeclaration()) {
+      if (!F.isDeclaration())
         if (sycl::isKernel(F)) {
           kernelSPIRify(F);
-          
-	  // Rename basic block name
+
+          // Rename basic block name
           int count = 0;
           for (auto &B : F)
             B.setName("label_" + Twine{count++});
         } else if (!F.isIntrinsic()) {
-          // After kernel code selection, there are only two kinds of functions
+          // After kernels code selection, there are only two kinds of functions
           // left: funcions called by kernels or LLVM intrinsic functions.
-          // For functions called in SYCL kernels. Put SPIR calling convention.
+          // For functions called in SYCL kernels, put SPIR calling convention.
           kernelCallFuncSPIRify(F);
-          
-	  // Modify the name of funcion called by SYCL kernel since function
+
+          // Modify the name of funcions called by SYCL kernel since function
           // names with $ sign would choke Xilinx xocc.
-          // And in Xilinx xocc, there are passes spliting function to new
-          // functions. These new function name will come from some of the basic
-          // block name in the original function.
-          // So function and basic block names need to modify avoid containing $
-          // sign
-          
-	  // Rename function name
+          // And in Xilinx xocc, there are passes splitting a function to new
+          // functions. These new function names will come from some of the
+          // basic block names in the original function.
+          // So function and basic block names need to be modified to avoid
+          // containing $ sign
+
+          // Rename function name
           F.setName("sycl_func_" + Twine{funcCount++});
 
           // Rename basic block name
@@ -298,7 +298,6 @@ struct inSPIRation : public ModulePass {
           for (auto &B : F)
             B.setName("label_" + Twine{count++});
         }
-      }
     }
 
     setSPIRVersion(M);

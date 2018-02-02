@@ -58,7 +58,6 @@
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
-
 using namespace llvm;
 
 #define DEBUG_TYPE "loop-idiom"
@@ -220,7 +219,6 @@ static void deleteDeadInstruction(Instruction *I) {
 
 bool LoopIdiomRecognize::runOnLoop(Loop *L) {
   CurLoop = L;
-
   // If the loop could not be converted to canonical form, it must have an
   // indirectbr in it, just give up.
   if (!L->getLoopPreheader())
