@@ -44,6 +44,7 @@ STATISTIC(SYCLKernelProcessed, "Number of SYCL kernel functions processed");
 STATISTIC(SYCLFuncCalledInKernelFound, "Number of functions directly or indirectly called by SYCL kernel functions");
 
 cl::opt<bool> ReqdWorkGroupSizeOne("reqd-workgroup-size-1", cl::desc("set reqd_work_group_size to be 1-1-1"));
+cl::opt<bool> RemoveKernelArgType("remove-kernel-arg-type", cl::desc("remove kernel_arg_type"));
 
 // Put the code in an anonymous namespace to avoid polluting the global
 // namespace
@@ -189,12 +190,17 @@ struct inSPIRation : public ModulePass {
     F.setMetadata("kernel_arg_addr_space",
                   llvm::MDNode::get(Ctx, AddressSpaceQuals));
 
-    // Add the SPIR metadata describing the type of each argument
-    F.setMetadata("kernel_arg_type", llvm::MDNode::get(Ctx, Types));
+    // Now, since kernel_arg_type and kernel_arg_base_type with types
+    // that are not c++ fundamental types would choke xocc, we remove
+    // these two metadata when specifying -remove-kernel-arg-type
+    if (!RemoveKernelArgType) {
+      // Add the SPIR metadata describing the type of each argument
+      F.setMetadata("kernel_arg_type", llvm::MDNode::get(Ctx, Types));
 
-    // For now, just repeat "kernel_arg_type" as "kernel_arg_base_type" because
-    // we do not have the type alias information
-    F.setMetadata("kernel_arg_base_type", llvm::MDNode::get(Ctx, Types));
+      // For now, just repeat "kernel_arg_type" as "kernel_arg_base_type"
+      // because we do not have the type alias information
+      F.setMetadata("kernel_arg_base_type", llvm::MDNode::get(Ctx, Types));
+    }
 
     // Add the SPIR metadata describing the type qualifier of each argument
     F.setMetadata("kernel_arg_type_qual", llvm::MDNode::get(Ctx, TypeQuals));
