@@ -268,7 +268,7 @@ struct inSPIRation : public ModulePass {
     for (auto &F : M.functions()) {
       // Only consider definition of SYCL kernels
       // \todo Put SPIR calling convention on declarations too
-      if (!F.isDeclaration())
+      if (!F.isDeclaration()) {
         if (sycl::isKernel(F)) {
           kernelSPIRify(F);
 
@@ -298,6 +298,7 @@ struct inSPIRation : public ModulePass {
           for (auto &B : F)
             B.setName("label_" + Twine{count++});
         }
+      }
     }
 
     setSPIRVersion(M);
