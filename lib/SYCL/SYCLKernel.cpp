@@ -107,9 +107,9 @@ void recordFunctionsCalledByKernel(CallGraphSCC &SCC, CallGraph &CG,
   for (auto SCCI = scc_begin(&CG); !SCCI.isAtEnd(); ++SCCI) {
     auto const &nextSCC = *SCCI;
     for (auto I : nextSCC)
-      if(auto *F = (*I)->getFunction())
+      if(auto *F = I->getFunction())
         if (isKernel(*F) || isTransitivelyCalledFromKernel(*F, FunctionsCalledByKernel))
-          FunctionsCalledByKernel.push_back(F);
+          FunctionsCalledByKernel.insert(F);
   }
 }
 
@@ -119,7 +119,7 @@ void updateFunctionsCalledByKernel (CallGraphNode &NewNode,
                                     SmallPtrSet<Function *, 32> &FunctionsCalledByKernel) {
   auto *F = NewNode.getFunction();
   if (isTransitivelyCalledFromKernel(*F, FunctionsCalledByKernel))
-    FunctionsCalledByKernel.push_back(F);
+    FunctionsCalledByKernel.insert(F);
 }
 
 /// Mapping from the full kernel mangle named to a unique integer ID
