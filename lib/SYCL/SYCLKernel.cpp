@@ -26,8 +26,8 @@
 #include "llvm/Analysis/CallGraphSCCPass.h"
 // Wait for LLVM 4.0...
 // #include "llvm/Demangle/Demangle.h"
-#include "llvm/IR/Function.h"
 #include "llvm/IR/CallSite.h"
+#include "llvm/IR/Function.h"
 #include "llvm/SYCL.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -86,10 +86,7 @@ bool isTransitivelyCalledFromKernel(Function &F,
     CallSite CS{U.getUser()};
     if (auto I = CS.getInstruction()) {
       auto parent = I->getParent()->getParent();
-      if (FunctionsCalledByKernel.count(parent))
-        return true;
-      else
-        return false;
+      return FunctionsCalledByKernel.count(parent);
     }
   }
 
