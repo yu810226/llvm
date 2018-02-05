@@ -7,18 +7,26 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Detect SYCL kernels and rename kernel too shorten unique names
+// Detect SYCL kernels and rename kernel to shorten unique names
+//
+// Detect if functions have kernel as an ancestor
 // ===------------------------------------------------------------------- -===//
 
+#include <algorithm>
 #include <cstdlib>
 #include <map>
 #include <memory>
 #include <sstream>
 #include <string>
 
+#include "llvm/ADT/SCCIterator.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/CallGraphSCCPass.h"
 // Wait for LLVM 4.0...
 // #include "llvm/Demangle/Demangle.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Function.h"
 #include "llvm/SYCL.h"
 #include "llvm/Support/Debug.h"
@@ -71,6 +79,45 @@ bool isKernel(const Function &F) {
   return KernelFound;
 }
 
+/// Test if functions having the kernel as an ancestor
+bool isTransitivelyCalledFromKernel(Function &F,
+                                    SmallPtrSet<Function *, 32> &FunctionsCalledByKernel) {
+  for (auto &U : F.uses()) {
+    CallSite CS{U.getUser()};
+    if (auto I = CS.getInstruction()) {
+      auto parent = I->getParent()->getParent();
+      return FunctionsCalledByKernel.count(parent);
+    }
+  }
+
+  return false;
+}
+
+/// Add the functions that are transitively called from the kernel in the set
+void recordFunctionsCalledByKernel(CallGraphSCC &SCC, CallGraph &CG,
+                                   SmallPtrSet<Function *, 32> &FunctionsCalledByKernel) {
+  // Find the CallGraphNode that the kernel function belongs to.
+  // Then, DFS algorithm starts from the kernel function CallGraphNode to
+  // discover all the functions that have kernel as an ancestor and add them to
+  // the FunctionsCalledByKernel set.
+  // \note for (CallGraphNode *I : SCC) {} will run in bottom-up order
+  for (auto SCCI = scc_begin(&CG); !SCCI.isAtEnd(); ++SCCI) {
+    auto const &nextSCC = *SCCI;
+    for (auto I : nextSCC)
+      if(auto *F = I->getFunction())
+        if (isKernel(*F) || isTransitivelyCalledFromKernel(*F, FunctionsCalledByKernel))
+          FunctionsCalledByKernel.insert(F);
+  }
+}
+
+/// Update the FunctionsCalledByKernel set when new CallGraphNode created in
+/// CallGraph
+void updateFunctionsCalledByKernel (CallGraphNode &NewNode,
+                                    SmallPtrSet<Function *, 32> &FunctionsCalledByKernel) {
+  auto *F = NewNode.getFunction();
+  if (isTransitivelyCalledFromKernel(*F, FunctionsCalledByKernel))
+    FunctionsCalledByKernel.insert(F);
+}
 
 /// Mapping from the full kernel mangle named to a unique integer ID
 std::map<std::string, std::size_t> SimplerKernelNames;

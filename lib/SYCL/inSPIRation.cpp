@@ -26,6 +26,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/Pass.h"
 #include "llvm/SYCL.h"
 #include "llvm/Support/Debug.h"
@@ -40,12 +41,13 @@ using namespace llvm;
 
 /// Displayed with -stats
 STATISTIC(SYCLKernelProcessed, "Number of SYCL kernel functions processed");
+STATISTIC(SYCLFuncCalledInKernelFound, "Number of functions directly or indirectly called by SYCL kernel functions");
 
 // Put the code in an anonymous namespace to avoid polluting the global
 // namespace
 namespace {
 
-/// Transorm the SYCL kernel functions into SPIR-compatible kernels
+/// Transform the SYCL kernel functions into SPIR-compatible kernels
 struct inSPIRation : public ModulePass {
 
   static char ID; // Pass identification, replacement for typeid
@@ -104,7 +106,7 @@ struct inSPIRation : public ModulePass {
   }
 
 
-  /// Transorm a function into a SPIR-compatible kernel
+  /// Transform a function into a SPIR-compatible kernel
   void kernelSPIRify(Function &F) {
     ++SYCLKernelProcessed;
 
@@ -192,6 +194,14 @@ struct inSPIRation : public ModulePass {
   }
 
 
+  /// Replace the function called in kernel to SPIR calling convention
+  void kernelCallFuncSPIRify(Function &F) {
+    SYCLFuncCalledInKernelFound++;
+    // This is a SPIR function
+    DEBUG(dbgs() << F.getName() << "is a SPIR function.\n");
+    F.setCallingConv(CallingConv::SPIR_FUNC);
+  }
+
   /// Add metadata for the SPIR 2.0 version
   void setSPIRVersion(Module &M) {
     /* Get inSPIRation from SPIRTargetCodeGenInfo::emitTargetMD in
@@ -235,11 +245,43 @@ struct inSPIRation : public ModulePass {
 
   /// Visit all the functions of the module
   bool runOnModule(Module &M) override {
+    // funcCount is for naming new name for each function called in kernel
+    int funcCount = 0;
+
     for (auto &F : M.functions()) {
       // Only consider definition of SYCL kernels
       // \todo Put SPIR calling convention on declarations too
-      if (!F.isDeclaration() && sycl::isKernel(F))
-        kernelSPIRify(F);
+      if (!F.isDeclaration()) {
+        if (sycl::isKernel(F)) {
+          kernelSPIRify(F);
+
+          // Rename basic block name
+          int count = 0;
+          for (auto &B : F)
+            B.setName("label_" + Twine{count++});
+        } else if (!F.isIntrinsic()) {
+          // After kernels code selection, there are only two kinds of functions
+          // left: funcions called by kernels or LLVM intrinsic functions.
+          // For functions called in SYCL kernels, put SPIR calling convention.
+          kernelCallFuncSPIRify(F);
+
+          // Modify the name of funcions called by SYCL kernel since function
+          // names with $ sign would choke Xilinx xocc.
+          // And in Xilinx xocc, there are passes splitting a function to new
+          // functions. These new function names will come from some of the
+          // basic block names in the original function.
+          // So function and basic block names need to be modified to avoid
+          // containing $ sign
+
+          // Rename function name
+          F.setName("sycl_func_" + Twine{funcCount++});
+
+          // Rename basic block name
+          int count = 0;
+          for (auto &B : F)
+            B.setName("label_" + Twine{count++});
+        }
+      }
     }
 
     setSPIRVersion(M);

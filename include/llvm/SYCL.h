@@ -16,6 +16,9 @@
 #include <cstddef>
 #include <string>
 
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/CallGraphSCCPass.h"
 #include "llvm/IR/Function.h"
 
 namespace llvm {
@@ -23,6 +26,19 @@ namespace sycl {
 
 /// Test if a function is a SYCL kernel
 bool isKernel(const Function &F);
+
+/// Test if functions having the kernel as an ancestor
+bool isTransitivelyCalledFromKernel(Function &F,
+                                    SmallPtrSet<Function *, 32> &FunctionsCalledByKernel);
+
+/// Add the functions that are transitively called from the kernel in the set
+void recordFunctionsCalledByKernel(CallGraphSCC &SCC, CallGraph &CG,
+                                   SmallPtrSet<Function *, 32> &FunctionsCalledByKernel);
+
+/// Update the FunctionsCalledByKernel set when new CallGraphNode created in
+/// CallGraph
+void updateFunctionsCalledByKernel (CallGraphNode &NewNode,
+                                    SmallPtrSet<Function *, 32> &FunctionsCalledByKernel);
 
 /// Register a kernel with its full name and returns its ID
 ///

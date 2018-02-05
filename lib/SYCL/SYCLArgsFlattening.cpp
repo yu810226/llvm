@@ -96,7 +96,7 @@
 
 using namespace llvm;
 
-#define DEBUG_TYPE "SYCL"
+#define DEBUG_TYPE "SYCL-args-flattening"
 
 STATISTIC(NumArgumentsPromoted, "Number of pointer arguments promoted");
 STATISTIC(NumAggregatesPromoted, "Number of aggregate arguments promoted");
@@ -105,6 +105,9 @@ STATISTIC(NumArgumentsDead, "Number of dead pointer args eliminated");
 
 /// A vector used to hold the indices of a single GEP instruction
 using IndicesVector = std::vector<uint64_t>;
+
+/// \todo Describe & initialize somewhere
+SmallPtrSet<Function*, 32> FunctionsCalledByKernel;
 
 /// DoPromotion - This method actually performs the promotion of the specified
 /// arguments, and returns the new function.  At this point, we know that it's
@@ -572,9 +575,11 @@ static void markIndicesSafe(const IndicesVector &ToMark,
 /// elements of the aggregate in order to avoid exploding the number of
 /// arguments passed in.
 static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
-                                    AAResults &AAR, unsigned MaxElements) {
+                                    AAResults &AAR, unsigned MaxElements,
+                                    CallGraph &CG) {
   using GEPIndicesSet = std::set<IndicesVector>;
 
+  Function *F = Arg->getParent();
   // Quick exit for unused arguments
   if (Arg->use_empty())
     return true;
@@ -607,6 +612,23 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
   if (isByValOrInAlloca || allCallersPassInValidPointerForArgument(Arg))
     SafeToUnconditionallyLoad.insert(IndicesVector(1, 0));
 
+  // isRelatedToKernel is for marking functions called in kernel.
+  bool isRelatedToKernel = false;
+
+  // If the function has ancestor kernel, force to do argument promotion
+  if (sycl::isTransitivelyCalledFromKernel(*F, FunctionsCalledByKernel)) {
+    DEBUG(dbgs() << "SYCL: " << F->getName() << "has ancestor kernel.\n");
+    isRelatedToKernel = true;
+  }
+
+  // If the function is called in kernel, force to make any load with first
+  // index 0 is valid.
+  if (isRelatedToKernel) {
+    SafeToUnconditionallyLoad.insert(IndicesVector(1, 0));
+    DEBUG(dbgs() << "SYCL: " << F->getName()
+          << " force to make any load with first index 0 is valid.\n");
+  }
+
   // First, iterate the entry block and mark loads of (geps of) arguments as
   // safe.
   BasicBlock &EntryBlock = Arg->getParent()->front();
@@ -624,10 +646,15 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
                II != IE; ++II)
             if (ConstantInt *CI = dyn_cast<ConstantInt>(*II))
               Indices.push_back(CI->getSExtValue());
-            else
+            else {
               // We found a non-constant GEP index for this argument? Bail out
               // right away, can't promote this argument at all.
               return false;
+              DEBUG(dbgs() << "SYCL: " << Arg->getName()
+                           << " in " << F->getName()
+                           << " used in non-constant GEP index.\n");
+              return false;
+            }
 
           // Indices checked out, mark them as safe
           markIndicesSafe(Indices, SafeToUnconditionallyLoad);
@@ -661,17 +688,24 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
         // TODO: This runs the above loop over and over again for dead GEPs
         // Couldn't we just do increment the UI iterator earlier and erase the
         // use?
+        DEBUG(dbgs() << "SYCL: Dead GEP" << *GEP << "\n");
         return isSafeToPromoteArgument(Arg, isByValOrInAlloca, AAR,
-                                       MaxElements);
+                                       MaxElements, CG);
       }
 
       // Ensure that all of the indices are constants.
       for (User::op_iterator i = GEP->idx_begin(), e = GEP->idx_end(); i != e;
-           ++i)
-        if (ConstantInt *C = dyn_cast<ConstantInt>(*i))
+           ++i) {
+        DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in GEP: "
+                     << *GEP << "\n");
+        if (ConstantInt *C = dyn_cast<ConstantInt>(*i)) {
+          DEBUG(dbgs() << C->getSExtValue() << " constant extend value.\n");
           Operands.push_back(C->getSExtValue());
-        else
+        } else {
+          DEBUG(dbgs() << "Not a constant operand GEP.\n");
           return false; // Not a constant operand GEP!
+        }
+      }
 
       // Ensure that the only users of the GEP are load instructions.
       for (User *GEPU : GEP->users())
@@ -682,16 +716,24 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
           Loads.push_back(LI);
         } else {
           // Other uses than load?
+          DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in GEP: "
+                       << *GEP << " in " <<  F->getName() << "\n"
+                       << "User: " << *GEPU << "\n");
           return false;
         }
     } else {
+      DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in " << F->getName()
+                   << " is not load or GEP.\n" << "User: " << *UR << "\n");
       return false; // Not a load or a GEP.
     }
 
     // Now, see if it is safe to promote this load / loads of this GEP. Loading
     // is safe if Operands, or a prefix of Operands, is marked as safe.
-    if (!prefixIn(Operands, SafeToUnconditionallyLoad))
+    if (!prefixIn(Operands, SafeToUnconditionallyLoad)) {
+      DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in "
+                   << F->getName() << " is not PrefixIn.\n");
       return false;
+    }
 
     // See if we are already promoting a load with these indices. If not, check
     // to make sure that we aren't promoting too many elements.  If so, nothing
@@ -719,6 +761,11 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
   // check to see if the pointer is guaranteed to not be modified from entry of
   // the function to each of the load instructions.
 
+  // However, if the function has kernel as an ancestor, the argument is
+  // guaranteed to not be modified from the start of the block to the load
+  // instruction itself.
+  // isRelatedToKernel is added here to determine if we are in this situation.
+
   // Because there could be several/many load instructions, remember which
   // blocks we know to be transparent to the load.
   df_iterator_default_set<BasicBlock *, 16> TranspBlocks;
@@ -729,16 +776,24 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
     BasicBlock *BB = Load->getParent();
 
     MemoryLocation Loc = MemoryLocation::get(Load);
-    if (AAR.canInstructionRangeModRef(BB->front(), *Load, Loc, ModRefInfo::Mod))
+    if (AAR.canInstructionRangeModRef(BB->front(), *Load, Loc, ModRefInfo::Mod)
+        && !isRelatedToKernel) {
+      DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in " << F->getName()
+                   << " but " << *Load << " is invalidated.\n");
       return false; // Pointer is invalidated!
+    }
 
     // Now check every path from the entry block to the load for transparency.
     // To do this, we perform a depth first search on the inverse CFG from the
     // loading block.
     for (BasicBlock *P : predecessors(BB)) {
       for (BasicBlock *TranspBB : inverse_depth_first_ext(P, TranspBlocks))
-        if (AAR.canBasicBlockModify(*TranspBB, Loc))
+        if (AAR.canBasicBlockModify(*TranspBB, Loc) && !isRelatedToKernel) {
+          DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in "
+                       << F->getName()
++                       << " every path from the entry block to the load is not transparency.\n");
           return false;
+        }
     }
   }
 
@@ -892,6 +947,13 @@ promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
     bool isSafeToPromote =
         PtrArg->hasByValAttr() &&
         (isDenselyPacked(AgTy, DL) || !canPaddingBeAccessed(PtrArg));
+
+    // If the function has ancestor kernel, force to do argument promotion
+    if (sycl::isTransitivelyCalledFromKernel(*F, FunctionsCalledByKernel)) {
+      DEBUG(dbgs() << "SYCL: " << F->getName() << "has ancestor kernel.\n");
+      isSafeToPromote = true;
+    }
+
     if (isSafeToPromote) {
       if (StructType *STy = dyn_cast<StructType>(AgTy)) {
         if (MaxElements > 0 && STy->getNumElements() > MaxElements) {
@@ -940,7 +1002,7 @@ promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
 
     // Otherwise, see if we can promote the pointer to its value.
     if (isSafeToPromoteArgument(PtrArg, PtrArg->hasByValOrInAllocaAttr(), AAR,
-                                MaxElements))
+                                MaxElements, CG))
       ArgsToPromote.insert(PtrArg);
   }
 
@@ -1040,7 +1102,6 @@ INITIALIZE_PASS_DEPENDENCY(CallGraphWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
 INITIALIZE_PASS_END(SYCLArgsFlattening, "SYCL-args-flattening",
                     "Promote 'by reference' arguments to scalars", false, false)
-
 /// Create a struct to call the pass initialization at load time
 struct InitSYCLArgsFlattening {
   InitSYCLArgsFlattening() {
@@ -1061,6 +1122,9 @@ bool SYCLArgsFlattening::runOnSCC(CallGraphSCC &SCC) {
   // Get the callgraph information that we need to update to reflect our
   // changes.
   CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
+
+  // Record the functions that are transitively called from kernel
+  sycl::recordFunctionsCalledByKernel(SCC, CG, FunctionsCalledByKernel);
 
   LegacyAARGetter AARGetter(*this);
 
@@ -1097,6 +1161,8 @@ bool SYCLArgsFlattening::runOnSCC(CallGraphSCC &SCC) {
 
         // And updat ethe SCC we're iterating as well.
         SCC.ReplaceNode(OldNode, NewNode);
+        // Update new node function for FunctionsCalledByKernel set
+        sycl::updateFunctionsCalledByKernel(*NewNode, FunctionsCalledByKernel);
       }
     }
     // Remember that we changed something.
