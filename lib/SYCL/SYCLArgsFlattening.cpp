@@ -791,7 +791,7 @@ static bool isSafeToPromoteArgument(Argument *Arg, bool isByValOrInAlloca,
         if (AAR.canBasicBlockModify(*TranspBB, Loc) && !isRelatedToKernel) {
           DEBUG(dbgs() << "SYCL: " << Arg->getName() << " used in "
                        << F->getName()
-+                       << " every path from the entry block to the load is not transparency.\n");
+                       << " every path from the entry block to the load is not transparency.\n");
           return false;
         }
     }
@@ -878,7 +878,8 @@ static bool canPaddingBeAccessed(Argument *arg) {
 /// example, all callers are direct).  If safe to promote some arguments, it
 /// calls the DoPromotion method.
 static Function *
-promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
+promoteArguments(CallGraph &CG,
+                 Function *F, function_ref<AAResults &(Function &F)> AARGetter,
                  unsigned MaxElements,
                  Optional<function_ref<void(CallSite OldCS, CallSite NewCS)>>
                      ReplaceCallSite) {
@@ -1013,50 +1014,59 @@ promoteArguments(Function *F, function_ref<AAResults &(Function &F)> AARGetter,
   return doPromotion(F, ArgsToPromote, ByValArgsToTransform, ReplaceCallSite);
 }
 
-PreservedAnalyses ArgumentPromotionPass::run(LazyCallGraph::SCC &C,
-                                             CGSCCAnalysisManager &AM,
-                                             LazyCallGraph &CG,
-                                             CGSCCUpdateResult &UR) {
-  bool Changed = false, LocalChange;
-
-  // Iterate until we stop promoting from this SCC.
-  do {
-    LocalChange = false;
-
-    for (LazyCallGraph::Node &N : C) {
-      Function &OldF = N.getFunction();
-
-      FunctionAnalysisManager &FAM =
-          AM.getResult<FunctionAnalysisManagerCGSCCProxy>(C, CG).getManager();
-      // FIXME: This lambda must only be used with this function. We should
-      // skip the lambda and just get the AA results directly.
-      auto AARGetter = [&](Function &F) -> AAResults & {
-        assert(&F == &OldF && "Called with an unexpected function!");
-        return FAM.getResult<AAManager>(F);
-      };
-
-      Function *NewF = promoteArguments(&OldF, AARGetter, MaxElements, None);
-      if (!NewF)
-        continue;
-      LocalChange = true;
-
-      // Directly substitute the functions in the call graph. Note that this
-      // requires the old function to be completely dead and completely
-      // replaced by the new function. It does no call graph updates, it merely
-      // swaps out the particular function mapped to a particular node in the
-      // graph.
-      C.getOuterRefSCC().replaceNodeFunction(N, *NewF);
-      OldF.eraseFromParent();
-    }
-
-    Changed |= LocalChange;
-  } while (LocalChange);
-
-  if (!Changed)
-    return PreservedAnalyses::all();
-
-  return PreservedAnalyses::none();
-}
+// From LLVM 5.0, the run function is added since LazyCallGraph is updated to
+// support  efficient replacement of a function and spurious reference edges
+// Details can be found from below:
+//   https://reviews.llvm.org/D29580
+//   https://marc.info/?t=148637662400001&r=1&w=2
+// However, this function is now unused in SYCLLArgsFlattening.cpp and we have
+// not yet implemented the promoteArguments function for LazyCallGraph. The
+// easy way for now is just to comment out this function.
+//PreservedAnalyses ArgumentPromotionPass::run(LazyCallGraph::SCC &C,
+//                                             CGSCCAnalysisManager &AM,
+//                                             LazyCallGraph &CG,
+//                                             CGSCCUpdateResult &UR) {
+//  bool Changed = false, LocalChange;
+//
+//  // Iterate until we stop promoting from this SCC.
+//  do {
+//    LocalChange = false;
+//
+//    for (LazyCallGraph::Node &N : C) {
+//      Function &OldF = N.getFunction();
+//
+//      FunctionAnalysisManager &FAM =
+//          AM.getResult<FunctionAnalysisManagerCGSCCProxy>(C, CG).getManager();
+//      // FIXME: This lambda must only be used with this function. We should
+//      // skip the lambda and just get the AA results directly.
+//      auto AARGetter = [&](Function &F) -> AAResults & {
+//        assert(&F == &OldF && "Called with an unexpected function!");
+//        return FAM.getResult<AAManager>(F);i
+//      };
+//
+//      Function *NewF = promoteArguments(&OldF, AARGetter, MaxElements,
+//                                        None);
+//      if (!NewF)
+//        continue;
+//      LocalChange = true;
+//
+//      // Directly substitute the functions in the call graph. Note that this
+//      // requires the old function to be completely dead and completely
+//      // replaced by the new function. It does no call graph updates, it merely
+//      // swaps out the particular function mapped to a particular node in the
+//      // graph.
+//      C.getOuterRefSCC().replaceNodeFunction(N, *NewF);
+//      OldF.eraseFromParent();
+//    }
+//
+//    Changed |= LocalChange;
+//  } while (LocalChange);
+//
+//  if (!Changed)
+//    return PreservedAnalyses::all();
+//
+//  return PreservedAnalyses::none();
+//}
 
 namespace {
 
@@ -1147,7 +1157,7 @@ bool SYCLArgsFlattening::runOnSCC(CallGraphSCC &SCC) {
         CallerNode->replaceCallEdge(OldCS, NewCS, NewCalleeNode);
       };
 
-      if (Function *NewF = promoteArguments(OldF, AARGetter, MaxElements,
+      if (Function *NewF = promoteArguments(CG, OldF, AARGetter, MaxElements,
                                             {ReplaceCallSite})) {
         LocalChange = true;
 
