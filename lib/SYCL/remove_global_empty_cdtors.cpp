@@ -84,7 +84,7 @@ bool removeEmptyGlobalArray(Module &M,
   auto GL = M.getGlobalVariable(GlobalVariableName);
   if (GL) {
     DEBUG(errs() << "Found " << GlobalVariableName << "\n\n");
-    GL->getType()->dump();
+    DEBUG(GL->getType()->dump());
     if (auto PT = dyn_cast<PointerType>(GL->getType()))
       // If it is an array, try to get the pointee array
       if (auto AT = dyn_cast<ArrayType>(PT->getElementType()))
